@@ -1,11 +1,13 @@
 {
   "name": "agent-court",
-  "version": "0.1.0",
-  "description": "ERC-7500: The legal system for AI agents",
+  "version": "1.0.0",
+  "description": "ERC-7500: Agent Court - Identity, Payments, Disputes for AI Agents",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
-    "deploy": "hardhat run scripts/deploy.js"
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network baseSepolia",
+    "deploy:base": "hardhat run scripts/deploy.js --network base",
+    "verify": "hardhat run scripts/verify.js --network baseSepolia"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
@@ -14,6 +16,8 @@
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.2",
-    "@chainlink/contracts": "^1.2.0"
-  }
+    "ethers": "^6.13.0"
+  },
+  "keywords": ["erc-7500", "ai-agents", "ethereum", "payments", "disputes"],
+  "license": "Apache-2.0"
 }
