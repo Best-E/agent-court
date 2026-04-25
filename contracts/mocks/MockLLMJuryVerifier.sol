@@ -1,30 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
-interface ITaskEscrow {
-    function resolve(uint256 taskId, bool payerWon) external;
-}
+import "../interfaces/ILLMJuryVerifier.sol";
+import "../TaskEscrow.sol";
 
-contract MockLLMJuryVerifier {
-    ITaskEscrow public escrow;
-    uint8 public mockVote = 3;
-    uint256 public lastTaskId;
+contract MockLLMJuryVerifier is ILLMJuryVerifier {
+    TaskEscrow public immutable escrow;
+    address public owner;
+    
+    // For testing: control the jury outcome
+    bool public autoApprove = true;
+    bool public shouldRevert = false;
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner");
+        _;
+    }
 
     constructor(address _escrow) {
-        escrow = ITaskEscrow(_escrow);
+        escrow = TaskEscrow(_escrow);
+        owner = msg.sender;
     }
 
-    function requestVerdict(uint256 taskId) external {
-        lastTaskId = taskId;
+    function requestVerification(uint256 taskId) external override {
+        if (shouldRevert) revert("Mock: Forced revert");
+        
+        // Instant response for tests
+        escrow.resolveDispute(taskId, autoApprove);
     }
 
-    function setVote(uint8 _vote) external {
-        require(_vote <= 5, "Invalid vote");
-        mockVote = _vote;
+    // Test helpers
+    function setAutoApprove(bool _approve) external onlyOwner {
+        autoApprove = _approve;
     }
 
-    function fulfillMock(uint256 taskId) external {
-        bool payerWon = mockVote < 3;
-        escrow.resolve(taskId, payerWon);
+    function setShouldRevert(bool _revert) external onlyOwner {
+        shouldRevert = _revert;
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        owner = newOwner;
     }
 }
