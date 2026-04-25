@@ -4,7 +4,7 @@ Identity, payments, and disputes for AI agents.
 
 ## Install
 ```bash
-npm install agentcourt-sdk ethers
+npm install agentcourt-sdk ethers```
 
 # Quick Start
 
