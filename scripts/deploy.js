@@ -1,70 +1,72 @@
-const { ethers, run } = require("hardhat");
-require("dotenv").config();
+const hre = require("hardhat");
 
 async function main() {
-  console.log("Deploying AgentCourt to Base Sepolia...");
+  console.log("Deploying ERC-7500 v1.0 to Base Sepolia...");
+
   const [deployer] = await ethers.getSigners();
   console.log("Deployer:", deployer.address);
-  console.log("Balance:", ethers.formatEther(await ethers.provider.getBalance(deployer.address)), "ETH");
 
-  const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-
+  // 1. AgentRegistry
   console.log("\n1. Deploying AgentRegistry...");
   const AgentRegistry = await ethers.getContractFactory("AgentRegistry");
-  const registry = await AgentRegistry.deploy(USDC_ADDRESS);
+  const registry = await AgentRegistry.deploy();
   await registry.waitForDeployment();
   const registryAddr = await registry.getAddress();
-  console.log("AgentRegistry deployed to:", registryAddr);
+  console.log("AgentRegistry:", registryAddr);
 
+  // 2. TaskEscrow
   console.log("\n2. Deploying TaskEscrow...");
   const TaskEscrow = await ethers.getContractFactory("TaskEscrow");
-  const escrow = await TaskEscrow.deploy(USDC_ADDRESS, registryAddr);
+  const escrow = await TaskEscrow.deploy(registryAddr);
   await escrow.waitForDeployment();
   const escrowAddr = await escrow.getAddress();
-  console.log("TaskEscrow deployed to:", escrowAddr);
+  console.log("TaskEscrow:", escrowAddr);
 
+  // 3. LLMJuryVerifier
   console.log("\n3. Deploying LLMJuryVerifier...");
-  const SUBSCRIPTION_ID = process.env.CHAINLINK_SUB_ID || 0;
   const LLMJuryVerifier = await ethers.getContractFactory("LLMJuryVerifier");
-  const jury = await LLMJuryVerifier.deploy(escrowAddr, SUBSCRIPTION_ID);
+  const jury = await LLMJuryVerifier.deploy(escrowAddr);
   await jury.waitForDeployment();
   const juryAddr = await jury.getAddress();
-  console.log("LLMJuryVerifier deployed to:", juryAddr);
+  console.log("LLMJuryVerifier:", juryAddr);
 
-  console.log("\n4. Initializing AgentRegistry...");
-  const initTx = await registry.initialize(escrowAddr, juryAddr);
-  await initTx.wait();
-  console.log("Registry initialized with Escrow + Jury");
+  // 4. PaymentIntent
+  console.log("\n4. Deploying PaymentIntent...");
+  const PaymentIntent = await ethers.getContractFactory("PaymentIntent");
+  const payment = await PaymentIntent.deploy(registryAddr);
+  await payment.waitForDeployment();
+  const paymentAddr = await payment.getAddress();
+  console.log("PaymentIntent:", paymentAddr);
 
-  console.log("\n5. Verifying contracts on Basescan...");
-  console.log("Waiting 30s for Basescan to index...");
+  console.log("\n=== DEPLOYMENT COMPLETE ===");
+  console.log("AgentRegistry:", registryAddr);
+  console.log("TaskEscrow:", escrowAddr);
+  console.log("LLMJuryVerifier:", juryAddr);
+  console.log("PaymentIntent:", paymentAddr);
+  console.log("\nUpdate sdk/index.js ADDRESSES with these values");
+
+  console.log("\nVerifying contracts...");
   await new Promise(r => setTimeout(r, 30000));
 
   try {
-    await run("verify:verify", { address: registryAddr, constructorArguments: [USDC_ADDRESS] });
+    await hre.run("verify:verify", { address: registryAddr, constructorArguments: [] });
     console.log("AgentRegistry verified");
-  } catch (e) { console.log("AgentRegistry verify failed:", e.message); }
+  } catch (e) { console.log("Registry verify:", e.message); }
 
   try {
-    await run("verify:verify", { address: escrowAddr, constructorArguments: [USDC_ADDRESS, registryAddr] });
+    await hre.run("verify:verify", { address: escrowAddr, constructorArguments: [registryAddr] });
     console.log("TaskEscrow verified");
-  } catch (e) { console.log("TaskEscrow verify failed:", e.message); }
+  } catch (e) { console.log("Escrow verify:", e.message); }
 
   try {
-    await run("verify:verify", { address: juryAddr, constructorArguments: [escrowAddr, SUBSCRIPTION_ID] });
+    await hre.run("verify:verify", { address: juryAddr, constructorArguments: [escrowAddr] });
     console.log("LLMJuryVerifier verified");
-  } catch (e) { console.log("LLMJuryVerifier verify failed:", e.message); }
+  } catch (e) { console.log("Jury verify:", e.message); }
 
-  console.log("\n=== DEPLOYMENT COMPLETE ===");
-  console.log("Network: Base Sepolia");
-  console.log("AgentRegistry:", registryAddr);
-  console.log("TaskEscrow: ", escrowAddr);
-  console.log("LLMJury: ", juryAddr);
-  console.log("USDC Used: ", USDC_ADDRESS);
-  console.log("\nBasescan Links:");
-  console.log(`https://sepolia.basescan.org/address/${registryAddr}`);
-  console.log(`https://sepolia.basescan.org/address/${escrowAddr}`);
-  console.log(`https://sepolia.basescan.org/address/${juryAddr}`);
+  try {
+    await hre.run("verify:verify", { address: paymentAddr, constructorArguments: [registryAddr] });
+    console.log("PaymentIntent verified");
+  } catch (e) { console.log("Payment verify:", e.message); }
 }
 
 main().catch((error) => {
