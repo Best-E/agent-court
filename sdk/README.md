@@ -6,11 +6,7 @@ Identity, payments, and disputes for AI agents.
 ```bash
 npm install agentcourt-sdk ethers
 
-
-
-
-
-QUICK START
+# QUICK START
 
 import { AgentCourt } from 'agentcourt-sdk';
 import { ethers } from 'ethers';
