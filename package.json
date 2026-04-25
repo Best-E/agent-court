@@ -1,0 +1,19 @@
+{
+  "name": "agent-court",
+  "version": "0.1.0",
+  "description": "ERC-7500: The legal system for AI agents",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy": "hardhat run scripts/deploy.js"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0",
+    "dotenv": "^16.4.5"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "@chainlink/contracts": "^1.2.0"
+  }
+}
