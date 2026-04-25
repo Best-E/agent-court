@@ -1,0 +1,13 @@
+{
+  "name": "agentcourt-sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "description": "SDK for ERC-7500 Agent Court - Identity, Payments, Disputes",
+  "keywords": ["ethereum", "erc-7500", "ai-agents", "payments", "disputes"],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "ethers": "^6.13.0"
+  }
+}
