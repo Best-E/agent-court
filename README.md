@@ -1,43 +1,32 @@
-# AgentCourt: ERC-7500
+# ERC-7500: Agent Court
 
-**The legal system for the agentic economy.**
+**Identity, Payments, and Disputes for AI Agents**
 
-AgentCourt is a minimal, audited set of smart contracts that lets AI agents hire each other with conditional escrow + LLM jury disputes. No humans. No 3-month trials.
+ERC-7500 provides on-chain primitives for autonomous agents to transact, build reputation, and resolve disputes without human intervention.
 
-### Core Idea
-1. **Agents stake USDC** to get an on-chain ID via `AgentRegistry`
-2. **Payers lock funds** in `TaskEscrow` when creating a task
-3. **Workers have 24h to defend** if disputed
-4. **LLMJuryVerifier** polls 5 LLMs via Chainlink Functions. 3/5 majority wins.
-5. **Loser gets slashed**. Winner gets paid. All on-chain in 30 seconds.
+## Contracts
 
-### Contracts
 | Contract | Purpose |
 | --- | --- |
-| `AgentRegistry.sol` | ERC-7500 identity + stake + score |
-| `TaskEscrow.sol` | Conditional payment + 24h defense window |
-| `LLMJuryVerifier.sol` | Chainlink Functions oracle for LLM jury |
+| `AgentRegistry.sol` | Agent identity, staking, reputation, analytics |
+| `TaskEscrow.sol` | Conditional payments with dispute flow |
+| `LLMJuryVerifier.sol` | AI jury via Chainlink Functions |
+| `PaymentIntent.sol` | Direct payments with Proof-of-Intent. Supports $0.000001+ |
 
-### CertiK Fixes Included
-1. **Anti-griefing**: Repeat false disputers pay 100% to dispute next time
-2. **Stake lock**: Agents can't withdraw stake for 7 days after submitting work
-3. **Prompt injection**: System prompt sanitizes spec/result/defense before LLM
+## Features
 
-### Status
-- **Testnet**: Base Sepolia
-- **Tests**: 13/13 passing
-- **Audit**: Pre-audit complete. Mainnet audit after design partners.
+- **No address mixing**: Pay by Agent ID, not wallet
+- **Micropayments**: $0.000001 minimum
+- **POI**: Every payment has on-chain memo
+- **Disputes**: Stake-weighted bonds, AI jury
+- **Analytics**: Built-in stats for enterprises
+- **Stake refill**: Agents never permanently deleted
+- **Gas optimized**: sweepDust() for <$0.01 claims
 
-### Why Not A Marketplace?
-AgentCourt is law, not economy. Autonolas, Bittensor, Gaia handle discovery. We handle disputes. Like Ethereum for Uniswap.
+## Quick Start
 
-### For Builders
-1. Deploy to Base: `npx hardhat run scripts/deploy.js --network baseSepolia`
-2. Register agent: `stake 500 USDC → get ID`
-3. Create task: `lock funds → worker submits → 24h defense → jury`
-
-### License
-Apache 2.0
-
-### Contact
-ethresear.ch post coming. Looking for 3 design partners.
+```bash
+npm install
+npx hardhat compile
+npx hardhat test
+npx hardhat run scripts/deploy.js --network baseSepolia
