@@ -1,6 +1,17 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
+/** 
+ * Safe accounts handling for CI
+ * Uses default Hardhat test key if PRIVATE_KEY env is set and valid
+ * Otherwise uses empty array so compile doesn't crash
+ */
+const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
+const accounts = PRIVATE_KEY.length === 66 ? [PRIVATE_KEY] : [];
+
+const BASE_SEPOLIA_RPC = process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org";
+const COINMARKETCAP_API_KEY = process.env.COINMARKETCAP_API_KEY || "";
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
@@ -9,49 +20,49 @@ module.exports = {
       optimizer: {
         enabled: true,
         runs: 200
-      },
-      viaIR: true
+      }
     }
   },
+  
   networks: {
-    hardhat: {},
-    "base-sepolia": {
-      url: process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org",
-      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+    hardhat: {
+      // used for local tests
+    },
+    localhost: {
+      url: "http://127.0.0.1:8545"
+    },
+    baseSepolia: {
+      url: BASE_SEPOLIA_RPC,
+      accounts: accounts,
       chainId: 84532
     },
-    "base": {
-      url: process.env.BASE_RPC || "https://mainnet.base.org",
-      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+    base: {
+      url: "https://mainnet.base.org",
+      accounts: accounts,
       chainId: 8453
     }
   },
+
   etherscan: {
     apiKey: {
-      "base-sepolia": process.env.BASESCAN_API_KEY || "",
-      "base": process.env.BASESCAN_API_KEY || ""
+      baseSepolia: process.env.BASESCAN_API_KEY || "",
+      base: process.env.BASESCAN_API_KEY || ""
     },
     customChains: [
       {
-        network: "base-sepolia",
+        network: "baseSepolia",
         chainId: 84532,
         urls: {
           apiURL: "https://api-sepolia.basescan.org/api",
           browserURL: "https://sepolia.basescan.org"
         }
-      },
-      {
-        network: "base",
-        chainId: 8453,
-        urls: {
-          apiURL: "https://api.basescan.org/api",
-          browserURL: "https://basescan.org"
-        }
       }
     ]
   },
+
   gasReporter: {
     enabled: process.env.REPORT_GAS !== undefined,
-    currency: "USD"
+    currency: "USD",
+    coinmarketcap: COINMARKETCAP_API_KEY
   }
 };
