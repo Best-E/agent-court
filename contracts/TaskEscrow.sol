@@ -1,186 +1,175 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "./AgentRegistry.sol";
+import "./interfaces/ILLMJuryVerifier.sol";
 
-interface IVerifier {
-    function verify(bytes calldata data) external returns (bool);
-}
-
-contract TaskEscrow is ReentrancyGuard {
+contract TaskEscrow is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    AgentRegistry public immutable REGISTRY;
-    IERC20 public immutable USDC;
-
-    enum Status { Created, Submitted, Disputed, Resolved, Cancelled }
+    enum TaskStatus { Created, Completed, Disputed, Resolved, Cancelled }
 
     struct Task {
         uint256 id;
-        uint256 fromAgentId;
-        uint256 toAgentId;
+        uint256 clientId;
+        uint256 agentId;
         uint256 amount;
-        bytes32 specHash;
-        bytes32 resultHash;
-        bytes32 defenseHash;
-        address verifier;
-        uint64 deadline;
-        uint64 disputeDeadline;
-        Status status;
-        bool payerWon;
+        bytes32 proofHash;
+        TaskStatus status;
+        uint256 createdAt;
+        uint256 completedAt;
+        bool clientApproved;
+        bool agentApproved;
     }
+
+    AgentRegistry public immutable registry;
+    IERC20 public immutable USDC;
+    ILLMJuryVerifier public juryVerifier;
 
     uint256 public nextTaskId = 1;
-    uint256 public constant PROTOCOL_FEE_BPS = 100;
-    uint256 public constant DISPUTE_WINDOW = 24 hours;
-
     mapping(uint256 => Task) public tasks;
-    mapping(uint256 => uint256) public disputeBonds;
+    mapping(uint256 => uint256) public escrowedAmounts;
 
-    event TaskCreated(uint256 indexed id, uint256 indexed from, uint256 indexed to, uint256 amount);
-    event TaskSubmitted(uint256 indexed id, bytes32 resultHash);
-    event TaskDisputed(uint256 indexed id, string reason);
-    event TaskResolved(uint256 indexed id, bool payerWon);
+    event TaskCreated(uint256 indexed id, uint256 indexed clientId, uint256 indexed agentId, uint256 amount);
+    event TaskCompleted(uint256 indexed id, bytes32 proofHash);
+    event TaskDisputed(uint256 indexed id);
+    event TaskResolved(uint256 indexed id, bool clientWon);
+    event TaskCancelled(uint256 indexed id);
+    event JuryVerifierSet(address verifier);
 
-    error NotPayer();
-    error NotWorker();
+    error TaskNotFound();
+    error NotClient();
+    error NotAgent();
     error InvalidStatus();
-    error DeadlinePassed();
-    error DisputeWindowClosed();
+    error AlreadyApproved();
 
-    constructor(address _registry) {
-        REGISTRY = AgentRegistry(_registry);
-        USDC = IERC20(REGISTRY.USDC());
-        REGISTRY.setAuthorizedContract(address(this), true);
+    constructor(address _registry) Ownable(msg.sender) {
+        registry = AgentRegistry(_registry);
+        USDC = registry.USDC();
     }
 
-    function createTask(
-        uint256 toAgentId,
-        uint256 amount,
-        bytes32 specHash,
-        address verifier,
-        uint64 deadline
-    ) external nonReentrant returns (uint256) {
-        AgentRegistry.Agent memory from = REGISTRY.getAgentByOwner(msg.sender);
-        AgentRegistry.Agent memory to = REGISTRY.getAgent(toAgentId);
-        require(from.id!= 0 && from.active, "Invalid payer");
-        require(to.id!= 0 && to.active, "Invalid worker");
-        require(deadline > block.timestamp, "Deadline passed");
+    function setJuryVerifier(address _verifier) external onlyOwner {
+        juryVerifier = ILLMJuryVerifier(_verifier);
+        emit JuryVerifierSet(_verifier);
+    }
 
-        uint256 fee = (amount * PROTOCOL_FEE_BPS) / 10000;
-        USDC.safeTransferFrom(msg.sender, address(this), amount + fee);
+    function createTask(uint256 agentId, uint256 amount, bytes32 proofHash) external nonReentrant returns (uint256) {
+        uint256 clientId = registry.getAgentByOwner(msg.sender).id;
+        require(clientId!= 0, "Client not registered");
+        require(registry.getAgent(agentId).active, "Agent not active");
+        require(amount > 0, "Amount 0");
 
-        uint256 taskId = nextTaskId++;
-        tasks[taskId] = Task({
-            id: taskId,
-            fromAgentId: from.id,
-            toAgentId: toAgentId,
+        USDC.safeTransferFrom(msg.sender, address(this), amount);
+
+        uint256 id = nextTaskId++;
+        tasks[id] = Task({
+            id: id,
+            clientId: clientId,
+            agentId: agentId,
             amount: amount,
-            specHash: specHash,
-            resultHash: 0,
-            defenseHash: 0,
-            verifier: verifier,
-            deadline: deadline,
-            disputeDeadline: 0,
-            status: Status.Created,
-            payerWon: false
+            proofHash: proofHash,
+            status: TaskStatus.Created,
+            createdAt: block.timestamp,
+            completedAt: 0,
+            clientApproved: false,
+            agentApproved: false
         });
 
-        emit TaskCreated(taskId, from.id, toAgentId, amount);
-        return taskId;
+        escrowedAmounts[id] = amount;
+        emit TaskCreated(id, clientId, agentId, amount);
+        return id;
     }
 
-    function submitProof(uint256 taskId, bytes32 resultHash) external nonReentrant {
+    function completeTask(uint256 taskId, bytes32 proofHash) external nonReentrant {
         Task storage task = tasks[taskId];
-        AgentRegistry.Agent memory worker = REGISTRY.getAgentByOwner(msg.sender);
-        if (worker.id!= task.toAgentId) revert NotWorker();
-        if (task.status!= Status.Created) revert InvalidStatus();
-        if (block.timestamp > task.deadline) revert DeadlinePassed();
+        if (task.id == 0) revert TaskNotFound();
+        if (registry.getAgentByOwner(msg.sender).id!= task.agentId) revert NotAgent();
+        if (task.status!= TaskStatus.Created) revert InvalidStatus();
 
-        task.resultHash = resultHash;
-        task.status = Status.Submitted;
-        task.disputeDeadline = uint64(block.timestamp + DISPUTE_WINDOW);
+        task.status = TaskStatus.Completed;
+        task.completedAt = block.timestamp;
+        task.proofHash = proofHash;
+        task.agentApproved = true;
 
-        emit TaskSubmitted(taskId, resultHash);
+        emit TaskCompleted(taskId, proofHash);
     }
 
-    function dispute(uint256 taskId, string calldata reason) external payable nonReentrant {
+    function approveTask(uint256 taskId) external nonReentrant {
         Task storage task = tasks[taskId];
-        AgentRegistry.Agent memory payer = REGISTRY.getAgentByOwner(msg.sender);
-        if (payer.id!= task.fromAgentId) revert NotPayer();
-        if (task.status!= Status.Submitted) revert InvalidStatus();
-        if (block.timestamp > task.disputeDeadline) revert DisputeWindowClosed();
+        if (task.id == 0) revert TaskNotFound();
+        if (registry.getAgentByOwner(msg.sender).id!= task.clientId) revert NotClient();
+        if (task.status!= TaskStatus.Completed) revert InvalidStatus();
+        if (task.clientApproved) revert AlreadyApproved();
 
-        uint256 bond = (task.amount * getDisputeMultiplier(task.toAgentId)) / 10000;
-        require(msg.value >= bond, "Insufficient bond");
+        task.clientApproved = true;
 
-        task.status = Status.Disputed;
-        disputeBonds[taskId] = msg.value;
+        _payout(taskId, task.agentId);
+        registry.recordTaskComplete(task.agentId, task.amount);
 
-        emit TaskDisputed(taskId, reason);
+        task.status = TaskStatus.Resolved;
+        emit TaskResolved(taskId, false);
     }
 
-    function submitDefense(uint256 taskId, bytes32 defenseHash) external nonReentrant {
+    function disputeTask(uint256 taskId) external {
         Task storage task = tasks[taskId];
-        AgentRegistry.Agent memory worker = REGISTRY.getAgentByOwner(msg.sender);
-        if (worker.id!= task.toAgentId) revert NotWorker();
-        if (task.status!= Status.Disputed) revert InvalidStatus();
+        if (task.id == 0) revert TaskNotFound();
+        if (registry.getAgentByOwner(msg.sender).id!= task.clientId) revert NotClient();
+        if (task.status!= TaskStatus.Completed) revert InvalidStatus();
 
-        task.defenseHash = defenseHash;
-    }
+        task.status = TaskStatus.Disputed;
+        registry.recordDispute(task.agentId);
 
-    function resolve(uint256 taskId, bool payerWon) external nonReentrant {
-        Task storage task = tasks[taskId];
-        require(msg.sender == task.verifier, "Not verifier");
-        require(task.status == Status.Disputed, "Not disputed");
-
-        task.status = Status.Resolved;
-        task.payerWon = payerWon;
-
-        AgentRegistry.Agent memory worker = REGISTRY.getAgent(task.toAgentId);
-        AgentRegistry.Agent memory payer = REGISTRY.getAgent(task.fromAgentId);
-
-        if (payerWon) {
-            USDC.safeTransfer(payer.wallet, task.amount);
-            REGISTRY.slash(task.toAgentId, task.amount / 10, "Lost dispute");
-            REGISTRY.updateScore(task.toAgentId, -50);
-            REGISTRY.updateScore(task.fromAgentId, 5);
-            REGISTRY.recordDisputeResult(task.toAgentId, false);
-            REGISTRY.recordDisputeResult(task.fromAgentId, true);
-            payable(payer.owner).transfer(disputeBonds[taskId]);
-        } else {
-            USDC.safeTransfer(worker.wallet, task.amount);
-            REGISTRY.updateScore(task.toAgentId, 5);
-            REGISTRY.updateScore(task.fromAgentId, -10);
-            REGISTRY.recordDisputeResult(task.toAgentId, true);
-            REGISTRY.recordDisputeResult(task.fromAgentId, false);
-            REGISTRY.recordTaskComplete(task.toAgentId, task.amount);
-            payable(worker.owner).transfer(disputeBonds[taskId]);
+        if (address(juryVerifier)!= address(0)) {
+            juryVerifier.requestVerification(taskId);
         }
 
-        emit TaskResolved(taskId, payerWon);
+        emit TaskDisputed(taskId);
     }
 
-    function cancelExpired(uint256 taskId) external nonReentrant {
+    function resolveDispute(uint256 taskId, bool clientWon) external {
+        require(msg.sender == address(juryVerifier), "Only jury");
         Task storage task = tasks[taskId];
-        require(task.status == Status.Created, "Not created");
-        require(block.timestamp > task.deadline, "Not expired");
+        if (task.id == 0) revert TaskNotFound();
+        if (task.status!= TaskStatus.Disputed) revert InvalidStatus();
 
-        task.status = Status.Cancelled;
-        AgentRegistry.Agent memory payer = REGISTRY.getAgent(task.fromAgentId);
-        USDC.safeTransfer(payer.wallet, task.amount);
+        task.status = TaskStatus.Resolved;
 
-        REGISTRY.slash(task.toAgentId, task.amount / 20, "Abandoned task");
-        REGISTRY.updateScore(task.toAgentId, -25);
+        if (clientWon) {
+            _payout(taskId, task.clientId);
+        } else {
+            _payout(taskId, task.agentId);
+            registry.recordTaskComplete(task.agentId, task.amount);
+        }
+
+        emit TaskResolved(taskId, clientWon);
     }
 
-    function getDisputeMultiplier(uint256 agentId) public view returns (uint256) {
-        AgentRegistry.Agent memory agent = REGISTRY.getAgent(agentId);
-        if (agent.score >= 800) return 2000;
-        if (agent.score >= 600) return 5000;
-        return 10000;
+    function cancelTask(uint256 taskId) external nonReentrant {
+        Task storage task = tasks[taskId];
+        if (task.id == 0) revert TaskNotFound();
+        if (registry.getAgentByOwner(msg.sender).id!= task.clientId) revert NotClient();
+        if (task.status!= TaskStatus.Created) revert InvalidStatus();
+
+        task.status = TaskStatus.Cancelled;
+        _payout(taskId, task.clientId);
+
+        emit TaskCancelled(taskId);
+    }
+
+    function _payout(uint256 taskId, uint256 recipientId) internal {
+        uint256 amount = escrowedAmounts[taskId];
+        require(amount > 0, "Nothing to pay");
+
+        escrowedAmounts[taskId] = 0;
+        address recipient = registry.getAgent(recipientId).owner;
+        USDC.safeTransfer(recipient, amount);
+    }
+
+    function getTask(uint256 taskId) external view returns (Task memory) {
+        return tasks[taskId];
     }
 }
