@@ -1,43 +1,41 @@
-// Chainlink Functions source for LLM Jury
-// args[0] = taskId
-// args[1] = escrowAddress
-// args[2] = clientClaim
-// args[3] = agentClaim
-// args[4] = proofHash
+// Chainlink Functions source code
+// Args: [taskId, taskProofHash, completionProofHash, clientEvidenceHash, agentEvidenceHash]
+// Secrets: OPENAI_API_KEY
 
 const taskId = args[0];
-const escrowAddress = args[1];
-const clientClaim = args[2];
-const agentClaim = args[3];
-const proofHash = args[4];
+const taskProofHash = args[1];
+const completionProofHash = args[2];
+const clientEvidenceHash = args[3];
+const agentEvidenceHash = args[4];
 
-if (!secrets.openaiKey) {
-  throw Error("OPENAI_KEY not set in secrets");
-}
+// 1. Fetch evidence from IPFS/HTTP - replace with your storage
+// For v1, we'll just pass hashes to the LLM and let it reason on the prompt
+// In production: const taskDesc = await Functions.makeHttpRequest({url: `https://ipfs.io/ipfs/${taskProofHash}`})
 
 const prompt = `
-You are an impartial jury for a Web3 task dispute.
+You are a judge in Agent Court. A client hired an AI agent. The agent claims completion. The client disputes.
 
 Task ID: ${taskId}
-Escrow Contract: ${escrowAddress}
-Proof Hash: ${proofHash}
+Original task proof hash: ${taskProofHash}
+Agent completion proof hash: ${completionProofHash}
+Client evidence hash: ${clientEvidenceHash}
+Agent evidence hash: ${agentEvidenceHash}
 
-Client Position: ${clientClaim}
-Agent Position: ${agentClaim}
+Rules:
+1. If the agent's completion proof reasonably satisfies the original task description, the agent wins.
+2. If the agent failed, was malicious, or proof is missing/invalid, the client wins.
+3. Be strict but fair. Agents should be paid if they delivered.
 
-Instructions:
-1. Review both positions. Assume the proofHash links to IPFS evidence.
-2. Decide if the agent completed the task as agreed.
-3. Respond ONLY with a single digit: 1 if agent won, 0 if client won.
-4. No explanation. No other text.
-
-Decision:`;
+Return ONLY a single number with no explanation:
+0 = Agent wins, escrow goes to agent
+1 = Client wins, escrow refunded to client
+`;
 
 const openaiRequest = Functions.makeHttpRequest({
   url: "https://api.openai.com/v1/chat/completions",
   method: "POST",
   headers: {
-    "Authorization": `Bearer ${secrets.openaiKey}`,
+    "Authorization": `Bearer ${secrets.OPENAI_API_KEY}`,
     "Content-Type": "application/json",
   },
   data: {
@@ -50,13 +48,15 @@ const openaiRequest = Functions.makeHttpRequest({
 
 const openaiResponse = await openaiRequest;
 if (openaiResponse.error) {
-  throw Error(`OpenAI error: ${openaiResponse.message}`);
+  throw Error("OpenAI request failed");
 }
 
 const result = openaiResponse.data.choices[0].message.content.trim();
+
+// Validate: must be "0" or "1"
 if (result!== "0" && result!== "1") {
   throw Error(`Invalid LLM response: ${result}`);
 }
 
-// Return 1 for agent win, 0 for client win
+// Return bytes - encoded uint8
 return Functions.encodeUint256(Number(result));
