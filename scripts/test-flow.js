@@ -1,35 +1,77 @@
-const { ethers } = require("hardhat");
+const hre = require("hardhat");
+const fs = require("fs");
+const path = require("path");
 
 async function main() {
-  const [deployer, agentA, agentB] = await ethers.getSigners();
+  const [deployer, client, agent] = await hre.ethers.getSigners();
+  const network = hre.network.name;
+  
+  console.log("Running e2e flow on:", network);
+  console.log("Deployer:", deployer.address);
 
-  // Replace with your deployed addresses after running deploy.js
-  const REGISTRY_ADDR = "0x..."; // AgentRegistry
-  const ESCROW_ADDR = "0x..."; // TaskEscrow
-  const USDC_ADDR = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"; // Base Sepolia USDC
+  // Load deployed addresses
+  const deploymentPath = path.join(__dirname, `../deployments/${network}.json`);
+  if (!fs.existsSync(deploymentPath)) {
+    throw new Error(`No deployment found for ${network}. Run deploy.js first.`);
+  }
+  const addresses = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
+  console.log("Loaded addresses:", addresses);
 
-  const usdc = await ethers.getContractAt("MockERC20", USDC_ADDR);
-  const registry = await ethers.getContractAt("AgentRegistry", REGISTRY_ADDR);
-  const escrow = await ethers.getContractAt("TaskEscrow", ESCROW_ADDR);
+  const usdc = await hre.ethers.getContractAt("MockERC20", addresses.USDC);
+  const registry = await hre.ethers.getContractAt("AgentRegistry", addresses.AgentRegistry);
+  const escrow = await hre.ethers.getContractAt("TaskEscrow", addresses.TaskEscrow);
 
-  console.log("Minting test USDC...");
-  await usdc.mint(agentA.address, ethers.parseUnits("1000", 6));
-  await usdc.mint(agentB.address, ethers.parseUnits("1000", 6));
+  const STAKE = 500n * 10n ** 6n;
+  const amount = 100n * 10n ** 6n;
 
-  console.log("Registering Agent A as Payer...");
-  await usdc.connect(agentA).approve(REGISTRY_ADDR, ethers.parseUnits("500", 6));
-  await registry.connect(agentA).registerAgent(ethers.id("AgentA"), agentA.address);
+  // 1. Register agent if not already
+  const agentId = await registry.ownerToId(agent.address);
+  if (agentId == 0) {
+    console.log("Registering agent...");
+    await usdc.mint(agent.address, STAKE);
+    await usdc.connect(agent).approve(addresses.AgentRegistry, STAKE);
+    const metadataHash = hre.ethers.keccak256(hre.ethers.toUtf8Bytes("test-agent"));
+    await registry.connect(agent).registerAgent(metadataHash, agent.address);
+    console.log("Agent registered. ID:", await registry.ownerToId(agent.address));
+  }
 
-  console.log("Registering Agent B as Worker...");
-  await usdc.connect(agentB).approve(REGISTRY_ADDR, ethers.parseUnits("500", 6));
-  await registry.connect(agentB).registerAgent(ethers.id("AgentB"), agentB.address);
+  // 2. Register client if not already  
+  const clientId = await registry.ownerToId(client.address);
+  if (clientId == 0) {
+    console.log("Registering client...");
+    await usdc.mint(client.address, STAKE);
+    await usdc.connect(client).approve(addresses.AgentRegistry, STAKE);
+    await registry.connect(client).registerAgent(hre.ethers.keccak256(hre.ethers.toUtf8Bytes("client")), client.address);
+    console.log("Client registered. ID:", await registry.ownerToId(client.address));
+  }
 
-  const agentAData = await registry.getAgentByOwner(agentA.address);
-  const agentBData = await registry.getAgentByOwner(agentB.address);
+  // 3. Create task
+  console.log("Creating task...");
+  await usdc.mint(client.address, amount);
+  await usdc.connect(client).approve(addresses.TaskEscrow, amount);
+  const taskId = await escrow.taskCounter() + 1n;
+  const proofHash = hre.ethers.keccak256(hre.ethers.toUtf8Bytes("ipfs://task-desc"));
+  
+  await escrow.connect(client).createTask(
+    await registry.ownerToId(agent.address), 
+    amount, 
+    proofHash
+  );
+  console.log("Task created. ID:", taskId.toString());
 
-  console.log("Agent A ID:", agentAData.id.toString(), "Stake:", agentAData.stake.toString());
-  console.log("Agent B ID:", agentBData.id.toString(), "Stake:", agentBData.stake.toString());
-  console.log("Success. Agents ready on Base Sepolia.");
+  // 4. Agent completes
+  console.log("Agent completing task...");
+  const completeProof = hre.ethers.keccak256(hre.ethers.toUtf8Bytes("ipfs://completion"));
+  await escrow.connect(agent).completeTask(taskId, completeProof);
+  
+  // 5. Client approves
+  console.log("Client approving...");
+  const balBefore = await usdc.balanceOf(agent.address);
+  await escrow.connect(client).approveTask(taskId);
+  const balAfter = await usdc.balanceOf(agent.address);
+  
+  console.log("Agent paid:", hre.ethers.formatUnits(balAfter - balBefore, 6), "USDC");
+  console.log("Flow complete ✓");
 }
 
 main().catch((error) => {
