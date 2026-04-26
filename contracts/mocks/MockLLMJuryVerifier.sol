@@ -6,39 +6,36 @@ import "../TaskEscrow.sol";
 
 contract MockLLMJuryVerifier is ILLMJuryVerifier {
     TaskEscrow public immutable escrow;
-    address public owner;
-    
-    // For testing: control the jury outcome
-    bool public autoApprove = true;
-    bool public shouldRevert = false;
-    
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner");
-        _;
-    }
+    bool public defaultVerdict; // true = client wins, false = agent wins
+    mapping(uint256 => bool) public customVerdicts;
+    mapping(uint256 => bool) public hasCustomVerdict;
 
-    constructor(address _escrow) {
+    event MockJuryCalled(uint256 indexed taskId, bool clientWon);
+
+    constructor(address _escrow, bool _defaultVerdict) {
         escrow = TaskEscrow(_escrow);
-        owner = msg.sender;
+        defaultVerdict = _defaultVerdict;
     }
 
     function requestVerification(uint256 taskId) external override {
-        if (shouldRevert) revert("Mock: Forced revert");
-        
-        // Instant response for tests
-        escrow.resolveDispute(taskId, autoApprove);
+        require(msg.sender == address(escrow), "Only escrow");
+
+        bool clientWon = hasCustomVerdict[taskId]
+          ? customVerdicts[taskId]
+            : defaultVerdict;
+
+        emit MockJuryCalled(taskId, clientWon);
+
+        // Immediately resolve - no Chainlink delay
+        escrow.resolveDispute(taskId, clientWon);
     }
 
-    // Test helpers
-    function setAutoApprove(bool _approve) external onlyOwner {
-        autoApprove = _approve;
+    function setVerdict(uint256 taskId, bool clientWins) external {
+        customVerdicts[taskId] = clientWins;
+        hasCustomVerdict[taskId] = true;
     }
 
-    function setShouldRevert(bool _revert) external onlyOwner {
-        shouldRevert = _revert;
-    }
-
-    function transferOwnership(address newOwner) external onlyOwner {
-        owner = newOwner;
+    function setDefaultVerdict(bool clientWins) external {
+        defaultVerdict = clientWins;
     }
 }
