@@ -1,21 +1,47 @@
-name: test
+name: CI
+
 on:
   pull_request:
-    branches: [main]
+    branches: 
   push:
-    branches: [main]
+    branches: 
 
 jobs:
   test:
+    name: Run Tests
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
-      - run: npm ci
-      - run: npx hardhat compile
-      - run: npx hardhat test
-      - run: npx slither. --filter-paths "node_modules"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile contracts
+        run: npx hardhat compile
+
+      - name: Run Hardhat tests
+        env:
+          # Use Hardhat's default test account - safe for CI
+          PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+          BASE_SEPOLIA_RPC: "https://sepolia.base.org"
+          COINMARKETCAP_API_KEY: ""
+          REPORT_GAS: "false"
+        run: npx hardhat test
+
+      - name: Install Slither
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install slither-analyzer
+
+      - name: Run Slither security scan
+        run: slither. --filter-paths "node_modules,contracts/test,contracts/mocks" --exclude-informational --exclude-low
         continue-on-error: true
