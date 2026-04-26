@@ -1,13 +1,48 @@
 {
-  "name": "agentcourt-sdk",
+  "name": "agent-court-sdk",
   "version": "1.0.0",
-  "type": "module",
-  "main": "index.js",
-  "description": "SDK for ERC-7500 Agent Court - Identity, Payments, Disputes",
-  "keywords": ["ethereum", "erc-7500", "ai-agents", "payments", "disputes"],
+  "description": "TypeScript SDK for Agent Court - on-chain agent registry, escrow, and LLM jury",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "dependencies": {
+    "ethers": "^6.13.2"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.1",
+    "typescript": "^5.5.4"
+  },
+  "peerDependencies": {
+    "ethers": "^6.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "agent-court",
+    "chainlink",
+    "escrow",
+    "agents",
+    "web3",
+    "base"
+  ],
   "author": "",
   "license": "Apache-2.0",
-  "dependencies": {
-    "ethers": "^6.13.0"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourorg/agent-court.git",
+    "directory": "sdk"
   }
 }
