@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract AgentRegistry is Ownable {
-    address public immutable USDC;
+contract AgentRegistry is ReentrancyGuard, Ownable {
+    using SafeERC20 for IERC20;
 
     struct Agent {
         uint256 id;
-        address owner;
-        address wallet;
-        uint256 stake;
-        uint16 score;
-        uint64 stakeLockedUntil;
-        uint64 registeredAt;
-        bool active;
         bytes32 metadataHash;
-        uint32 tasksCompleted;
-        uint32 disputesWon;
-        uint32 disputesLost;
+        address owner;
+        uint256 stakeAmount;
+        uint256 tasksCompleted;
+        uint256 tasksDisputed;
         uint256 totalEarned;
+        bool active;
+        uint256 registeredAt;
     }
 
     struct Stats {
@@ -27,172 +26,116 @@ contract AgentRegistry is Ownable {
         uint256 activeAgents;
         uint256 totalStakeLocked;
         uint256 totalTasksCompleted;
-        uint256 totalDisputes;
+        uint256 totalTasksDisputed;
         uint256 totalValueSecured;
     }
 
+    IERC20 public immutable USDC;
+    uint256 public constant STAKE_AMOUNT = 500e6; // $500 USDC
+
     uint256 public nextAgentId = 1;
-    uint256 public constant MIN_STAKE = 500 * 1e6;
-    uint256 public constant SLASH_COOLDOWN = 7 days;
-    uint16 public constant BASE_SCORE = 500;
-
     mapping(uint256 => Agent) public agents;
-    mapping(address => uint256) public ownerToAgentId;
-    mapping(address => bool) public authorizedContracts;
+    mapping(bytes32 => uint256) public metadataToId;
+    mapping(address => uint256) public ownerToId;
 
-    uint256 public totalAgentsEver;
+    uint256 public totalStakeLocked;
     uint256 public totalTasksCompleted;
-    uint256 public totalDisputesRaised;
-    uint256 public totalDisputesSettled;
+    uint256 public totalTasksDisputed;
+    uint256 public totalValueSecured;
 
-    event AgentRegistered(uint256 indexed id, address indexed owner, address indexed wallet, uint256 stake);
+    event AgentRegistered(uint256 indexed id, bytes32 metadataHash, address owner);
     event AgentSlashed(uint256 indexed id, uint256 amount, string reason);
-    event ScoreUpdated(uint256 indexed id, uint16 newScore);
-    event StakeRefilled(uint256 indexed id, uint256 amount, uint256 newTotal);
-    event AgentReactivated(uint256 indexed id);
-    event AgentStatsUpdated(uint256 indexed id, uint32 tasksCompleted, uint32 disputesWon, uint32 disputesLost, uint256 totalEarned);
+    event StakeRefilled(uint256 indexed id, uint256 amount);
+    event TaskRecorded(uint256 indexed id, uint256 value);
 
     error AlreadyRegistered();
     error InsufficientStake();
-    error NotActive();
-    error StakeLocked();
     error NotAgentOwner();
-    error NotAuthorized();
+    error AgentNotActive();
+    error InvalidMetadata();
 
-    constructor() Ownable(msg.sender) {
-        USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    constructor(address _usdc) Ownable(msg.sender) {
+        USDC = IERC20(_usdc);
     }
 
-    function registerAgent(bytes32 metadataHash, address wallet) external returns (uint256) {
-        if (ownerToAgentId[msg.sender]!= 0) revert AlreadyRegistered();
+    function registerAgent(bytes32 metadataHash, address agentOwner) external nonReentrant returns (uint256) {
+        if (metadataHash == bytes32(0)) revert InvalidMetadata();
+        if (metadataToId[metadataHash]!= 0) revert AlreadyRegistered();
+        if (ownerToId[agentOwner]!= 0) revert AlreadyRegistered();
 
-        (bool success, bytes memory data) = USDC.call(
-            abi.encodeWithSignature("transferFrom(address,address,uint256)", msg.sender, address(this), MIN_STAKE)
-        );
-        require(success && (data.length == 0 || abi.decode(data, (bool))), "Stake transfer failed");
+        USDC.safeTransferFrom(msg.sender, address(this), STAKE_AMOUNT);
 
-        uint256 agentId = nextAgentId++;
-        agents[agentId] = Agent({
-            id: agentId,
-            owner: msg.sender,
-            wallet: wallet,
-            stake: MIN_STAKE,
-            score: BASE_SCORE,
-            stakeLockedUntil: uint64(block.timestamp + SLASH_COOLDOWN),
-            registeredAt: uint64(block.timestamp),
-            active: true,
+        uint256 id = nextAgentId++;
+        agents[id] = Agent({
+            id: id,
             metadataHash: metadataHash,
+            owner: agentOwner,
+            stakeAmount: STAKE_AMOUNT,
             tasksCompleted: 0,
-            disputesWon: 0,
-            disputesLost: 0,
-            totalEarned: 0
+            tasksDisputed: 0,
+            totalEarned: 0,
+            active: true,
+            registeredAt: block.timestamp
         });
-        ownerToAgentId[msg.sender] = agentId;
-        totalAgentsEver++;
 
-        emit AgentRegistered(agentId, msg.sender, wallet, MIN_STAKE);
-        return agentId;
-    }
+        metadataToId[metadataHash] = id;
+        ownerToId[agentOwner] = id;
+        totalStakeLocked += STAKE_AMOUNT;
 
-    function refillStake(uint256 amount) external {
-        uint256 agentId = ownerToAgentId[msg.sender];
-        if (agentId == 0) revert NotAgentOwner();
-        Agent storage agent = agents[agentId];
-
-        (bool success, bytes memory data) = USDC.call(
-            abi.encodeWithSignature("transferFrom(address,address,uint256)", msg.sender, address(this), amount)
-        );
-        require(success && (data.length == 0 || abi.decode(data, (bool))), "Stake transfer failed");
-
-        bool wasInactive =!agent.active;
-        agent.stake += amount;
-        agent.stakeLockedUntil = uint64(block.timestamp + SLASH_COOLDOWN);
-
-        if (agent.stake >= MIN_STAKE && wasInactive) {
-            agent.active = true;
-            emit AgentReactivated(agentId);
-        }
-
-        emit StakeRefilled(agentId, amount, agent.stake);
+        emit AgentRegistered(id, metadataHash, agentOwner);
+        return id;
     }
 
     function slash(uint256 agentId, uint256 amount, string calldata reason) external onlyOwner {
         Agent storage agent = agents[agentId];
-        if (!agent.active) revert NotActive();
-        if (block.timestamp < agent.stakeLockedUntil) revert StakeLocked();
-        if (amount > agent.stake) amount = agent.stake;
+        require(agent.id!= 0, "Agent not found");
+        require(agent.stakeAmount >= amount, "Slash exceeds stake");
 
-        agent.stake -= amount;
-        agent.score = agent.score > 50? agent.score - 50 : 0;
+        agent.stakeAmount -= amount;
+        totalStakeLocked -= amount;
 
-        if (agent.stake < MIN_STAKE) {
+        if (agent.stakeAmount == 0) {
             agent.active = false;
         }
 
-        (bool success,) = USDC.call(abi.encodeWithSignature("transfer(address,uint256)", owner(), amount));
-        require(success, "Slash transfer failed");
-
+        USDC.safeTransfer(owner(), amount);
         emit AgentSlashed(agentId, amount, reason);
-        emit ScoreUpdated(agentId, agent.score);
     }
 
-    function updateScore(uint256 agentId, int16 delta) external onlyOwner {
-        Agent storage agent = agents[agentId];
-        if (!agent.active) revert NotActive();
+    function refillStake(uint256 amount) external nonReentrant {
+        uint256 agentId = ownerToId[msg.sender];
+        if (agentId == 0) revert NotAgentOwner();
 
-        if (delta >= 0) {
-            agent.score = agent.score + uint16(delta) > 1000? 1000 : agent.score + uint16(delta);
-        } else {
-            uint16 absDelta = uint16(-delta);
-            agent.score = agent.score > absDelta? agent.score - absDelta : 0;
+        Agent storage agent = agents[agentId];
+        USDC.safeTransferFrom(msg.sender, address(this), amount);
+
+        agent.stakeAmount += amount;
+        totalStakeLocked += amount;
+
+        if (!agent.active && agent.stakeAmount >= STAKE_AMOUNT) {
+            agent.active = true;
         }
-        emit ScoreUpdated(agentId, agent.score);
+
+        emit StakeRefilled(agentId, amount);
     }
 
-    function recordTaskComplete(uint256 agentId, uint256 earned) external {
-        if (!isAuthorizedContract(msg.sender) && msg.sender!= owner()) revert NotAuthorized();
+    function recordTaskComplete(uint256 agentId, uint256 value) external onlyOwner {
         Agent storage agent = agents[agentId];
+        require(agent.id!= 0, "Agent not found");
+
         agent.tasksCompleted++;
-        agent.totalEarned += earned;
+        agent.totalEarned += value;
         totalTasksCompleted++;
-        emit AgentStatsUpdated(agentId, agent.tasksCompleted, agent.disputesWon, agent.disputesLost, agent.totalEarned);
+        totalValueSecured += value;
+
+        emit TaskRecorded(agentId, value);
     }
 
-    function recordDisputeResult(uint256 agentId, bool won) external {
-        if (!isAuthorizedContract(msg.sender) && msg.sender!= owner()) revert NotAuthorized();
+    function recordDispute(uint256 agentId) external onlyOwner {
         Agent storage agent = agents[agentId];
-        if (won) agent.disputesWon++;
-        else agent.disputesLost++;
-        totalDisputesRaised++;
-        totalDisputesSettled++;
-        emit AgentStatsUpdated(agentId, agent.tasksCompleted, agent.disputesWon, agent.disputesLost, agent.totalEarned);
-    }
-
-    function setAuthorizedContract(address contractAddr, bool authorized) external onlyOwner {
-        authorizedContracts[contractAddr] = authorized;
-    }
-
-    function isAuthorizedContract(address contractAddr) public view returns (bool) {
-        return authorizedContracts[contractAddr];
-    }
-
-    function getStats() external view returns (Stats memory) {
-        uint256 activeCount = 0;
-        uint256 totalStake = 0;
-
-        for (uint256 i = 1; i < nextAgentId; i++) {
-            if (agents[i].active) activeCount++;
-            totalStake += agents[i].stake;
-        }
-
-        return Stats({
-            totalAgents: totalAgentsEver,
-            activeAgents: activeCount,
-            totalStakeLocked: totalStake,
-            totalTasksCompleted: totalTasksCompleted,
-            totalDisputes: totalDisputesRaised,
-            totalValueSecured: totalStake
-        });
+        require(agent.id!= 0, "Agent not found");
+        agent.tasksDisputed++;
+        totalTasksDisputed++;
     }
 
     function getAgent(uint256 agentId) external view returns (Agent memory) {
@@ -200,6 +143,22 @@ contract AgentRegistry is Ownable {
     }
 
     function getAgentByOwner(address owner) external view returns (Agent memory) {
-        return agents[ownerToAgentId[owner]];
+        return agents[ownerToId[owner]];
+    }
+
+    function getStats() external view returns (Stats memory) {
+        uint256 activeCount = 0;
+        for (uint256 i = 1; i < nextAgentId; i++) {
+            if (agents[i].active) activeCount++;
+        }
+
+        return Stats({
+            totalAgents: nextAgentId - 1,
+            activeAgents: activeCount,
+            totalStakeLocked: totalStakeLocked,
+            totalTasksCompleted: totalTasksCompleted,
+            totalTasksDisputed: totalTasksDisputed,
+            totalValueSecured: totalValueSecured
+        });
     }
 }
