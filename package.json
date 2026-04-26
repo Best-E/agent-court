@@ -1,5 +1,5 @@
 {
-  "name": "agent-escrow-protocol",
+  "name": "agent-court",
   "version": "1.0.0",
   "description": "On-chain agent registry + escrow + LLM jury via Chainlink Functions",
   "main": "index.js",
@@ -7,10 +7,12 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "test:gas": "REPORT_GAS=true hardhat test",
+    "test:flow": "hardhat run scripts/test-flow.js --network base-sepolia",
     "deploy:sepolia": "hardhat run scripts/deploy.js --network base-sepolia",
     "deploy:base": "hardhat run scripts/deploy.js --network base",
     "verify:sepolia": "hardhat verify --network base-sepolia",
     "verify:base": "hardhat verify --network base",
+    "verify:all": "hardhat run scripts/verify.js --network base-sepolia",
     "node": "hardhat node",
     "clean": "hardhat clean"
   },
