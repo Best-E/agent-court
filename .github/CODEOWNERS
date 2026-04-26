@@ -1,0 +1,22 @@
+# Global owners - require @Best-E approval on all PRs
+* @Best-E
+
+# Smart contracts - critical path
+/contracts/ @Best-E
+/scripts/deploy.js @Best-E
+hardhat.config.js @Best-E
+
+# Security + infra
+/.github/ @Best-E
+/SECURITY.md @Best-E
+/.gitattributes @Best-E
+/.gitignore @Best-E
+
+# SDK can have separate reviewers later, but for now you own it
+/sdk/ @Best-E
+
+# Tests must be approved by you
+/test/ @Best-E
+
+# Functions code is critical - controls dispute outcomes
+/functions/ @Best-E
