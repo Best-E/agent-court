@@ -3,12 +3,12 @@ const { ethers } = require("hardhat");
 
 describe("AgentFlow", function () {
   let usdc, registry, paymentIntent, escrow, jury;
-  let owner, client, agent, juryAddr;
+  let owner, client, agent;
   const STAKE = 500n * 10n ** 6n; // 500 USDC
   const metadataHash = ethers.keccak256(ethers.toUtf8Bytes("agent-v1"));
 
   beforeEach(async function () {
-    [owner, client, agent, juryAddr] = await ethers.getSigners();
+    [owner, client, agent] = await ethers.getSigners();
 
     const MockERC20 = await ethers.getContractFactory("MockERC20");
     usdc = await MockERC20.deploy("USD Coin", "USDC", 6);
@@ -22,8 +22,10 @@ describe("AgentFlow", function () {
     const TaskEscrow = await ethers.getContractFactory("TaskEscrow");
     escrow = await TaskEscrow.deploy(await registry.getAddress());
 
-    // Mock jury for testing
-    await escrow.setJuryVerifier(juryAddr.address);
+    // Deploy MockLLMJuryVerifier for tests
+    const MockLLMJuryVerifier = await ethers.getContractFactory("MockLLMJuryVerifier");
+    jury = await MockLLMJuryVerifier.deploy(await escrow.getAddress(), false); // false = agent wins by default
+    await escrow.setJuryVerifier(await jury.getAddress());
     
     // Transfer registry ownership to escrow for callbacks
     await registry.transferOwnership(await escrow.getAddress());
@@ -50,7 +52,7 @@ describe("AgentFlow", function () {
     await usdc.connect(client).approve(await escrow.getAddress(), amount);
     
     const tx = await escrow.connect(client).createTask(agentId, amount, proofHash);
-    const receipt = await tx.wait();
+    await tx.wait();
     const taskId = 1n;
 
     expect(await escrow.escrowedAmounts(taskId)).to.equal(amount);
@@ -76,7 +78,7 @@ describe("AgentFlow", function () {
     expect(agentData.totalEarned).to.equal(amount);
   });
 
-  it("Dispute path: create -> complete -> dispute -> jury resolves for agent", async function () {
+  it("Dispute path: agent wins via mock jury", async function () {
     await registry.connect(client).registerAgent(ethers.keccak256(ethers.toUtf8Bytes("client")), client.address);
     await registry.connect(agent).registerAgent(metadataHash, agent.address);
 
@@ -88,22 +90,46 @@ describe("AgentFlow", function () {
     await escrow.connect(client).createTask(agentId, amount, proofHash);
     await escrow.connect(agent).completeTask(1, proofHash);
 
-    // Client disputes
-    await escrow.connect(client).disputeTask(1);
-    let task = await escrow.getTask(1);
-    expect(task.status).to.equal(2); // Disputed
+    // Set jury to rule for agent
+    await jury.setVerdict(1, false);
 
-    // Mock jury calls resolveDispute - agent wins
     const agentBalBefore = await usdc.balanceOf(agent.address);
-    await escrow.connect(juryAddr).resolveDispute(1, false);
+    
+    // Client disputes - auto-resolves via mock
+    await expect(escrow.connect(client).disputeTask(1))
+      .to.emit(jury, "MockJuryCalled")
+      .withArgs(1, false);
 
-    task = await escrow.getTask(1);
+    let task = await escrow.getTask(1);
     expect(task.status).to.equal(3); // Resolved
     expect(await usdc.balanceOf(agent.address)).to.equal(agentBalBefore + amount);
 
     const agentData = await registry.getAgent(agentId);
     expect(agentData.tasksDisputed).to.equal(1);
     expect(agentData.tasksCompleted).to.equal(1);
+  });
+
+  it("Dispute path: client wins via mock jury", async function () {
+    await registry.connect(client).registerAgent(ethers.keccak256(ethers.toUtf8Bytes("client")), client.address);
+    await registry.connect(agent).registerAgent(metadataHash, agent.address);
+
+    const agentId = await registry.ownerToId(agent.address);
+    const amount = 100n * 10n ** 6n;
+    const proofHash = ethers.keccak256(ethers.toUtf8Bytes("task-proof"));
+
+    await usdc.connect(client).approve(await escrow.getAddress(), amount);
+    await escrow.connect(client).createTask(agentId, amount, proofHash);
+    await escrow.connect(agent).completeTask(1, proofHash);
+
+    // Set jury to rule for client
+    await jury.setVerdict(1, true);
+
+    const clientBalBefore = await usdc.balanceOf(client.address);
+    await escrow.connect(client).disputeTask(1);
+
+    let task = await escrow.getTask(1);
+    expect(task.status).to.equal(3); // Resolved
+    expect(await usdc.balanceOf(client.address)).to.equal(clientBalBefore + amount);
   });
 
   it("PaymentIntent: batchPay and claim", async function () {
@@ -127,9 +153,6 @@ describe("AgentFlow", function () {
   it("Slashing deactivates agent when stake hits 0", async function () {
     await registry.connect(agent).registerAgent(metadataHash, agent.address);
     const agentId = await registry.ownerToId(agent.address);
-
-    // Only escrow can call slash since it owns registry
-    await registry.connect(owner).transferOwnership(await escrow.getAddress());
     
     // Impersonate escrow to slash
     await hre.network.provider.request({
@@ -146,5 +169,16 @@ describe("AgentFlow", function () {
     const agentData = await registry.getAgent(agentId);
     expect(agentData.active).to.equal(false);
     expect(agentData.stakeAmount).to.equal(0);
+  });
+
+  it("Cannot create task with unregistered agent", async function () {
+    await registry.connect(client).registerAgent(ethers.keccak256(ethers.toUtf8Bytes("client")), client.address);
+    
+    const amount = 100n * 10n ** 6n;
+    await usdc.connect(client).approve(await escrow.getAddress(), amount);
+    
+    await expect(
+      escrow.connect(client).createTask(999, amount, ethers.ZeroHash)
+    ).to.be.revertedWith("Agent not active");
   });
 });
